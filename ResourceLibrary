@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "ipfs-api-rs/contracts/IPFSStorage.sol";
+
+contract VanaResourceLibrary is IPFSStorage {
+    struct ResourceMetadata {
+        string title;
+        string description;
+        string[] tags;
+        uint256 version;
+        uint256 uploadTimestamp;
+        address uploader;
+    }
+
+    mapping(string => ResourceMetadata) public resources;
+    mapping(address => uint256) public reputation;
+
+    event ResourceAdded(string indexed cid, string title, address indexed uploader);
+    event ResourceUpdated(string indexed cid, string title, uint256 indexed version, address indexed uploader);
+    event ReputationUpdated(address indexed user, uint256 newReputation);
+
+    constructor(address ipfsGateway) IPFSStorage(ipfsGateway) {}
+
+    function uploadResource(
+        string memory title,
+        string memory description,
+        string[] memory tags,
+        bytes memory content
+    ) public {
+        string memory cid = add(content);
+        uint256 version = resources[cid].version + 1;
+        resources[cid] = ResourceMetadata(title, description, tags, version, block.timestamp, msg.sender);
+        reputation[msg.sender]++;
+        emit ResourceAdded(cid, title, msg.sender);
+        emit ReputationUpdated(msg.sender, reputation[msg.sender]);
+    }
+
+    function updateResource(
+        string memory cid,
+        string memory title,
+        string memory description,
+        string[] memory tags,
+        bytes memory content
+    ) public {
+        require(resources[cid].uploader == msg.sender, "Only the uploader can update the resource");
+        string memory newCid = add(content);
+        resources[newCid] = ResourceMetadata(title, description, tags, resources[cid].version + 1, block.timestamp, msg.sender);
+        delete resources[cid];
+        reputation[msg.sender]++;
+        emit ResourceUpdated(newCid, title, resources[newCid].version, msg.sender);
+        emit ReputationUpdated(msg.sender, reputation[msg.sender]);
+    }
+
+    function getResource(string memory cid) public view returns (ResourceMetadata memory) {
+        return resources[cid];
+    }
+}
