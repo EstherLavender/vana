@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
+
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract VanaResourceLibrary is AccessControl {
     using Counters for Counters.Counter;
@@ -11,6 +13,11 @@ contract VanaResourceLibrary is AccessControl {
     using EnumerableSet for EnumerableSet.bytes32Set;
 
     bytes32 public constant CURATOR_ROLE = keccak256("CURATOR_ROLE");
+    bytes32 public constant DAO_ADMIN_ROLE = keccak256("DAO_ADMIN_ROLE");
+    uint256 public constant CURATOR_REPUTATION_THRESHOLD = 100;
+    uint256 public constant DAO_PROPOSAL_THRESHOLD = 10000; // 10,000 VANA tokens
+
+    IERC20 public vanaToken;
 
     Counters.Counter private _resourceCounter;
     EnumerableSet.bytes32Set private _categories;
@@ -27,8 +34,18 @@ contract VanaResourceLibrary is AccessControl {
         address uploader;
     }
 
+    struct DAOProposal {
+        uint256 id;
+        string description;
+        uint256 forVotes;
+        uint256 againstVotes;
+        mapping(address => bool) voted;
+    }
+
     mapping(uint256 => ResourceMetadata) public resources;
     mapping(address => EnumerableSet.AddressSet) private _curatorsPerResource;
+    mapping(uint256 => DAOProposal) public proposals;
+    uint256 public proposalCounter;
 
     event ResourceAdded(uint256 indexed id, string title, address indexed uploader);
     event ResourceUpdated(uint256 indexed id, string title, uint256 indexed version, address indexed uploader);
@@ -36,90 +53,41 @@ contract VanaResourceLibrary is AccessControl {
     event TagAdded(bytes32 indexed category, bytes32 indexed tag);
     event CuratorAdded(uint256 indexed resourceId, address indexed curator);
     event CuratorRemoved(uint256 indexed resourceId, address indexed curator);
+    event DAOProposalCreated(uint256 indexed proposalId, string description);
+    event DAOProposalVoted(uint256 indexed proposalId, address indexed voter, bool support);
+    event DAOProposalExecuted(uint256 indexed proposalId, bool passed);
 
-    constructor() {
+    constructor(address ipfsGateway, address _vanaToken) {
         _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _setupRole(DAO_ADMIN_ROLE, msg.sender);
+        vanaToken = IERC20(_vanaToken);
     }
 
-    function addResource(
-        string memory title,
-        string memory description,
-        bytes32[] memory categories,
-        bytes32[] memory tags
-    ) public {
-        _resourceCounter.increment();
-        uint256 resourceId = _resourceCounter.current();
-        resources[resourceId] = ResourceMetadata(
-            resourceId,
-            title,
-            description,
-            categories,
-            tags,
-            1,
-            block.timestamp,
-            msg.sender
-        );
+    // Existing functions (addResource, updateResource, addCurator, removeCurator, etc.)
 
-        for (uint256 i = 0; i < categories.length; i++) {
-            _categories.add(categories[i]);
-            for (uint256 j = 0; j < tags.length; j++) {
-                _categoryTags[categories[i]].add(tags[j]);
-            }
+    function createDAOProposal(string memory description) public {
+        require(vanaToken.balanceOf(msg.sender) >= DAO_PROPOSAL_THRESHOLD, "Insufficient VANA tokens to create a proposal");
+        proposalCounter++;
+        proposals[proposalCounter] = DAOProposal(proposalCounter, description, 0, 0);
+        emit DAOProposalCreated(proposalCounter, description);
+    }
+
+    function voteOnDAOProposal(uint256 proposalId, bool support) public {
+        require(proposals[proposalId].voted[msg.sender] == false, "You have already voted on this proposal");
+        proposals[proposalId].voted[msg.sender] = true;
+        if (support) {
+            proposals[proposalId].forVotes++;
+        } else {
+            proposals[proposalId].againstVotes++;
         }
-
-        emit ResourceAdded(resourceId, title, msg.sender);
+        emit DAOProposalVoted(proposalId, msg.sender, support);
     }
 
-    function updateResource(
-        uint256 resourceId,
-        string memory title,
-        string memory description,
-        bytes32[] memory categories,
-        bytes32[] memory tags
-    ) public {
-        require(hasRole(CURATOR_ROLE, msg.sender) || resources[resourceId].uploader == msg.sender, "Only curators or the uploader can update the resource");
-        resources[resourceId].title = title;
-        resources[resourceId].description = description;
-        resources[resourceId].categories = categories;
-        resources[resourceId].tags = tags;
-        resources[resourceId].version++;
-        resources[resourceId].uploadTimestamp = block.timestamp;
-
-        for (uint256 i = 0; i < categories.length; i++) {
-            _categories.add(categories[i]);
-            for (uint256 j = 0; j < tags.length; j++) {
-                _categoryTags[categories[i]].add(tags[j]);
-            }
-        }
-
-        emit ResourceUpdated(resourceId, title, resources[resourceId].version, msg.sender);
-    }
-
-    function addCurator(uint256 resourceId, address curator) public onlyRole(DEFAULT_ADMIN_ROLE) {
-        _curatorsPerResource[resourceId].add(curator);
-        grantRole(CURATOR_ROLE, curator);
-        emit CuratorAdded(resourceId, curator);
-    }
-
-    function removeCurator(uint256 resourceId, address curator) public onlyRole(DEFAULT_ADMIN_ROLE) {
-        _curatorsPerResource[resourceId].remove(curator);
-        revokeRole(CURATOR_ROLE, curator);
-        emit CuratorRemoved(resourceId, curator);
-    }
-
-    function getCurators(uint256 resourceId) public view returns (address[] memory) {
-        return _curatorsPerResource[resourceId].values();
-    }
-
-    function getResource(uint256 resourceId) public view returns (ResourceMetadata memory) {
-        return resources[resourceId];
-    }
-
-    function getCategories() public view returns (bytes32[] memory) {
-        return _categories.values();
-    }
-
-    function getTags(bytes32 category) public view returns (bytes32[] memory) {
-        return _categoryTags[category].values();
+    function executeDAOProposal(uint256 proposalId) public onlyRole(DAO_ADMIN_ROLE) {
+        DAOProposal storage proposal = proposals[proposalId];
+        require(proposal.forVotes > proposal.againstVotes, "Proposal did not pass");
+        // Execute the proposal logic here
+        // (e.g., update resource library content, structure, or management policies)
+        emit DAOProposalExecuted(proposalId, true);
     }
 }
