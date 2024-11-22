@@ -1,9 +1,17 @@
 // SPDX-License-Identifier: MIT
+
 pragma solidity ^0.8.0;
 
 import "ipfs-api-rs/contracts/IPFSStorage.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
-contract VanaResourceLibrary is IPFSStorage {
+contract VanaResourceLibrary is IPFSStorage, AccessControl {
+    using EnumerableSet for EnumerableSet.AddressSet;
+
+    bytes32 public constant CURATOR_ROLE = keccak256("CURATOR_ROLE");
+    uint256 public constant CURATOR_REPUTATION_THRESHOLD = 100;
+
     struct ResourceMetadata {
         string title;
         string description;
@@ -13,14 +21,28 @@ contract VanaResourceLibrary is IPFSStorage {
         address uploader;
     }
 
+    struct ResourceRating {
+        string cid;
+        address rater;
+        uint256 rating; // Range: 1-5
+        string review;
+    }
+
     mapping(string => ResourceMetadata) public resources;
     mapping(address => uint256) public reputation;
+    mapping(string => ResourceRating[]) private _resourceRatings;
 
     event ResourceAdded(string indexed cid, string title, address indexed uploader);
     event ResourceUpdated(string indexed cid, string title, uint256 indexed version, address indexed uploader);
+    event ResourceRated(string indexed cid, address indexed rater, uint256 rating, string review);
+    event ResourceUpvoted(string indexed cid, address indexed upvoter);
+    event ResourceUpdateSuggested(string indexed cid, address indexed suggester, string suggestion);
     event ReputationUpdated(address indexed user, uint256 newReputation);
+    event CuratorAdded(address indexed curator);
 
-    constructor(address ipfsGateway) IPFSStorage(ipfsGateway) {}
+    constructor(address ipfsGateway) IPFSStorage(ipfsGateway) {
+        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
+    }
 
     function uploadResource(
         string memory title,
@@ -43,7 +65,7 @@ contract VanaResourceLibrary is IPFSStorage {
         string[] memory tags,
         bytes memory content
     ) public {
-        require(resources[cid].uploader == msg.sender, "Only the uploader can update the resource");
+        require(resources[cid].uploader == msg.sender || hasRole(CURATOR_ROLE, msg.sender), "Only the uploader or curators can update the resource");
         string memory newCid = add(content);
         resources[newCid] = ResourceMetadata(title, description, tags, resources[cid].version + 1, block.timestamp, msg.sender);
         delete resources[cid];
@@ -52,7 +74,37 @@ contract VanaResourceLibrary is IPFSStorage {
         emit ReputationUpdated(msg.sender, reputation[msg.sender]);
     }
 
+    function rateResource(string memory cid, uint256 rating, string memory review) public {
+        require(rating >= 1 && rating <= 5, "Rating must be between 1 and 5");
+        _resourceRatings[cid].push(ResourceRating(cid, msg.sender, rating, review));
+        emit ResourceRated(cid, msg.sender, rating, review);
+    }
+
+    function upvoteResource(string memory cid) public {
+        require(hasRole(CURATOR_ROLE, msg.sender), "Only curators can upvote resources");
+        reputation[msg.sender]++;
+        emit ResourceUpvoted(cid, msg.sender);
+        emit ReputationUpdated(msg.sender, reputation[msg.sender]);
+    }
+
+    function suggestResourceUpdate(string memory cid, string memory suggestion) public {
+        require(hasRole(CURATOR_ROLE, msg.sender), "Only curators can suggest resource updates");
+        reputation[msg.sender]++;
+        emit ResourceUpdateSuggested(cid, msg.sender, suggestion);
+        emit ReputationUpdated(msg.sender, reputation[msg.sender]);
+    }
+
+    function becomeACurator() public {
+        require(reputation[msg.sender] >= CURATOR_REPUTATION_THRESHOLD, "Insufficient reputation to become a curator");
+        grantRole(CURATOR_ROLE, msg.sender);
+        emit CuratorAdded(msg.sender);
+    }
+
     function getResource(string memory cid) public view returns (ResourceMetadata memory) {
         return resources[cid];
+    }
+
+    function getResourceRatings(string memory cid) public view returns (ResourceRating[] memory) {
+        return _resourceRatings[cid];
     }
 }
