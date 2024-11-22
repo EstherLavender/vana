@@ -5,12 +5,15 @@ pragma solidity ^0.8.0;
 import "ipfs-api-rs/contracts/IPFSStorage.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract VanaResourceLibrary is IPFSStorage, AccessControl {
     using EnumerableSet for EnumerableSet.AddressSet;
 
     bytes32 public constant CURATOR_ROLE = keccak256("CURATOR_ROLE");
     uint256 public constant CURATOR_REPUTATION_THRESHOLD = 100;
+
+    IERC20 public vanaToken;
 
     struct ResourceMetadata {
         string title;
@@ -31,6 +34,8 @@ contract VanaResourceLibrary is IPFSStorage, AccessControl {
     mapping(string => ResourceMetadata) public resources;
     mapping(address => uint256) public reputation;
     mapping(string => ResourceRating[]) private _resourceRatings;
+    mapping(address => uint256) public earnedTokens;
+    mapping(address => bytes32[]) public badges;
 
     event ResourceAdded(string indexed cid, string title, address indexed uploader);
     event ResourceUpdated(string indexed cid, string title, uint256 indexed version, address indexed uploader);
@@ -39,9 +44,12 @@ contract VanaResourceLibrary is IPFSStorage, AccessControl {
     event ResourceUpdateSuggested(string indexed cid, address indexed suggester, string suggestion);
     event ReputationUpdated(address indexed user, uint256 newReputation);
     event CuratorAdded(address indexed curator);
+    event TokensClaimed(address indexed claimer, uint256 amount);
+    event BadgeIssued(address indexed recipient, bytes32 indexed badgeId);
 
-    constructor(address ipfsGateway) IPFSStorage(ipfsGateway) {
+    constructor(address ipfsGateway, address _vanaToken) IPFSStorage(ipfsGateway) {
         _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        vanaToken = IERC20(_vanaToken);
     }
 
     function uploadResource(
@@ -54,6 +62,7 @@ contract VanaResourceLibrary is IPFSStorage, AccessControl {
         uint256 version = resources[cid].version + 1;
         resources[cid] = ResourceMetadata(title, description, tags, version, block.timestamp, msg.sender);
         reputation[msg.sender]++;
+        earnedTokens[msg.sender] += 100; // Reward for uploading a resource
         emit ResourceAdded(cid, title, msg.sender);
         emit ReputationUpdated(msg.sender, reputation[msg.sender]);
     }
@@ -70,6 +79,7 @@ contract VanaResourceLibrary is IPFSStorage, AccessControl {
         resources[newCid] = ResourceMetadata(title, description, tags, resources[cid].version + 1, block.timestamp, msg.sender);
         delete resources[cid];
         reputation[msg.sender]++;
+        earnedTokens[msg.sender] += 50; // Reward for updating a resource
         emit ResourceUpdated(newCid, title, resources[newCid].version, msg.sender);
         emit ReputationUpdated(msg.sender, reputation[msg.sender]);
     }
@@ -77,12 +87,14 @@ contract VanaResourceLibrary is IPFSStorage, AccessControl {
     function rateResource(string memory cid, uint256 rating, string memory review) public {
         require(rating >= 1 && rating <= 5, "Rating must be between 1 and 5");
         _resourceRatings[cid].push(ResourceRating(cid, msg.sender, rating, review));
+        earnedTokens[msg.sender] += 25; // Reward for rating a resource
         emit ResourceRated(cid, msg.sender, rating, review);
     }
 
     function upvoteResource(string memory cid) public {
         require(hasRole(CURATOR_ROLE, msg.sender), "Only curators can upvote resources");
         reputation[msg.sender]++;
+        earnedTokens[msg.sender] += 50; // Reward for upvoting a resource
         emit ResourceUpvoted(cid, msg.sender);
         emit ReputationUpdated(msg.sender, reputation[msg.sender]);
     }
@@ -90,6 +102,7 @@ contract VanaResourceLibrary is IPFSStorage, AccessControl {
     function suggestResourceUpdate(string memory cid, string memory suggestion) public {
         require(hasRole(CURATOR_ROLE, msg.sender), "Only curators can suggest resource updates");
         reputation[msg.sender]++;
+        earnedTokens[msg.sender] += 75; // Reward for suggesting a resource update
         emit ResourceUpdateSuggested(cid, msg.sender, suggestion);
         emit ReputationUpdated(msg.sender, reputation[msg.sender]);
     }
@@ -97,7 +110,29 @@ contract VanaResourceLibrary is IPFSStorage, AccessControl {
     function becomeACurator() public {
         require(reputation[msg.sender] >= CURATOR_REPUTATION_THRESHOLD, "Insufficient reputation to become a curator");
         grantRole(CURATOR_ROLE, msg.sender);
+        _issueBadge(msg.sender, keccak256("CURATOR_BADGE"));
         emit CuratorAdded(msg.sender);
+    }
+
+    function claimEarnedTokens() public {
+        uint256 amount = earnedTokens[msg.sender];
+        require(amount > 0, "No tokens to claim");
+        earnedTokens[msg.sender] = 0;
+        vanaToken.transfer(msg.sender, amount);
+        emit TokensClaimed(msg.sender, amount);
+    }
+
+    function issueBadge(address recipient, bytes32 badgeId) public onlyRole(DEFAULT_ADMIN_ROLE) {
+        _issueBadge(recipient, badgeId);
+    }
+
+    function getBadges(address user) public view returns (bytes32[] memory) {
+        return badges[user];
+    }
+
+    function _issueBadge(address recipient, bytes32 badgeId) private {
+        badges[recipient].push(badgeId);
+        emit BadgeIssued(recipient, badgeId);
     }
 
     function getResource(string memory cid) public view returns (ResourceMetadata memory) {
